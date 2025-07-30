@@ -3,6 +3,8 @@ from database import engine, Base
 from routers import comments  # Asegúrate de que existe routers/comments.py
 
 from fastapi.middleware.cors import CORSMiddleware
+from routers import projects
+
 
 
 # Importar modelos para que SQLAlchemy los registre
@@ -21,9 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(projects.router)
+
 # Incluir routers
 app.include_router(comments.router)
 
 @app.get("/")
 def root():
     return {"status": "API funcionando correctamente"}
+
+
+from routers import projects
+app.include_router(projects.router)
