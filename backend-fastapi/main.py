@@ -1,37 +1,65 @@
+# backend-fastapi/main.py
 from fastapi import FastAPI
-from database import engine, Base
-from routers import comments  # Asegúrate de que existe routers/comments.py
-
 from fastapi.middleware.cors import CORSMiddleware
-from routers import projects
+from fastapi.staticfiles import StaticFiles
 
+import os
 
+from database import engine, Base
 
-# Importar modelos para que SQLAlchemy los registre
-from models import comment, user
+# Importa los modelos para que SQLAlchemy registre las tablas
+# (IMPORTANTE: incluir project para que cree la tabla `projects`)
+from models import comment, user, project  # noqa: F401
 
-# Crear todas las tablas si no existen
+# Routers
+from routers import comments, projects
+
+# --- Asegurar carpetas de subida existen ---
+# En este setup servimos /static -> carpeta "uploads"
+UPLOAD_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+os.makedirs(os.path.join(UPLOAD_ROOT, "projects"), exist_ok=True)
+
+# --- Crear todas las tablas si no existen ---
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="My Electro Site API", version="1.0")
+# --- App ---
+app = FastAPI(
+    title="My Electro Site API",
+    version="1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
+# --- CORS (ajusta si lo necesitas) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En desarrollo permite todo
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(projects.router)
+# --- Montar estáticos ---
+# /static -> backend-fastapi/uploads
+app.mount("/static", StaticFiles(directory=UPLOAD_ROOT), name="static")
 
-# Incluir routers
+# --- Incluir routers ---
+app.include_router(projects.router)
 app.include_router(comments.router)
 
+# --- Rutas base ---
 @app.get("/")
 def root():
-    return {"status": "API funcionando correctamente"}
+    return {
+        "status": "API funcionando correctamente",
+        "static_base": "/static",  # p.ej. /static/projects/archivo.jpg
+        "routers": ["/projects", "/comments"],
+    }
 
-
-from routers import projects
-app.include_router(projects.router)
+# (Opcional) Ejecutar directamente: `python main.py`
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", reload=True)
