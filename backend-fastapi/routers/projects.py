@@ -1,137 +1,176 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    File,
+    Form,
+    Query,
+)
 from sqlalchemy.orm import Session
-from typing import List
-import os
+from sqlalchemy import func
+from typing import List, Optional
+from pathlib import Path
 from datetime import datetime
 
 from database import get_db
 from models.project import Project
 
+# ---------- Configuración de rutas de subida ----------
+UPLOAD_ROOT = Path("static")          # servido por StaticFiles
+PROJECT_DIR = UPLOAD_ROOT / "projects"
+THUMBS_DIR = PROJECT_DIR / "thumbs"
+PROJECT_DIR.mkdir(parents=True, exist_ok=True)
+THUMBS_DIR.mkdir(parents=True, exist_ok=True)
+
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-# uploads/projects (relativa al backend)
-BASE_DIR = os.path.dirname(__file__)
-UPLOAD_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "uploads"))
-UPLOAD_DIR = os.path.join(UPLOAD_ROOT, "projects")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-def _to_list(value) -> List[str]:
-    """
-    Convierte lo que venga de la DB a lista de strings:
-    - None -> []
-    - list -> igual
-    - '{a,b,c}' (formato text[] de Postgres) -> ['a','b','c']
-    - 'uploads/projects/...' -> ['uploads/projects/...']
-    """
-    if value is None:
+# ---------- Utils ----------
+def _to_list(val):
+    """Convierte ARRAY/texto Postgres → list[str] segura."""
+    if val is None:
         return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        # Si es una sola ruta simple, devuélvela como lista de 1
-        if value.startswith("uploads/") or value.startswith("projects/"):
-            return [value]
-        # Si viene como '{a,b,c}'
-        s = value.strip().strip("{}")
-        if not s:
-            return []
-        # quitar comillas y espacios
-        parts = [p.strip().strip('"') for p in s.split(",")]
-        return [p for p in parts if p]
-    return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str) and val.startswith("{"):
+        # {'a','b'} → ["a","b"]
+        return [x.strip('"') for x in val.strip("{}").split(",") if x]
+    return list(val)
 
-def _rel_for_static(saved_abs_path: str) -> str:
-    """
-    Guarda SIEMPRE como 'projects/filename.ext' para servir con /static.
-    """
-    filename = os.path.basename(saved_abs_path)
-    return f"projects/{filename}"
 
+def _save_file(file: UploadFile, subdir: Path) -> str:
+    """Guarda UploadFile y devuelve ruta relativa a static/ …"""
+    filename = f"{int(datetime.utcnow().timestamp())}_{file.filename.replace(' ', '_')}"
+    dest = subdir / filename
+    with open(dest, "wb") as f:
+        f.write(file.file.read())
+    return str(dest.relative_to(UPLOAD_ROOT))
+
+# ---------- Endpoints ----------
 @router.get("/")
-def get_projects(db: Session = Depends(get_db)):
-    rows = db.query(Project).order_by(Project.fecha_creacion.desc()).all()
-    # Normalizamos salida
-    out = []
-    for p in rows:
-        imgs = _to_list(p.imagen_path)
-        vids = _to_list(p.video_path)
-        # Por compatibilidad: si algún elemento empieza con "uploads/", recórtalo
-        imgs = [path[8:] if path.startswith("uploads/") else path for path in imgs]
-        vids = [path[8:] if path.startswith("uploads/") else path for path in vids]
-        out.append({
+def get_projects(
+    q: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),           # csv: "iot,plc"
+    page: int = Query(1, ge=1),
+    page_size: int = Query(9, ge=1, le=50),
+    order: str = Query("date_desc"),             # date_desc | date_asc | title
+    db: Session = Depends(get_db),
+):
+    qry = db.query(Project)
+
+    # Búsqueda texto
+    if q:
+        like = f"%{q}%"
+        qry = qry.filter(
+            (Project.titulo.ilike(like)) | (Project.descripcion.ilike(like))
+        )
+
+    # Filtrado por tags (cada tag debe estar presente)
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        for t in tag_list:
+            qry = qry.filter(
+                func.array_to_string(Project.tags, ",").ilike(f"%{t}%")
+            )
+
+    # Orden
+    if order == "date_asc":
+        qry = qry.order_by(Project.fecha_creacion.asc())
+    elif order == "title":
+        qry = qry.order_by(Project.titulo.asc())
+    else:
+        qry = qry.order_by(Project.fecha_creacion.desc())
+
+    total = qry.count()
+    rows = qry.offset((page - 1) * page_size).limit(page_size).all()
+
+    def norm_paths(arr):
+        """Elimina prefijo 'uploads/' si aún existe."""
+        return [
+            p[8:] if p.startswith("uploads/") else p
+            for p in _to_list(arr)
+        ]
+
+    items = [
+        {
             "id": p.id,
             "titulo": p.titulo,
             "descripcion": p.descripcion,
-            "imagen_path": imgs,
-            "video_path": vids,
+            "imagen_path": norm_paths(p.imagen_path),
+            "video_path": norm_paths(p.video_path),
+            "tags": _to_list(p.tags),
             "fecha_creacion": p.fecha_creacion,
-        })
-    return out
+        }
+        for p in rows
+    ]
+
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
 
 @router.get("/{project_id}")
 def get_project(project_id: int, db: Session = Depends(get_db)):
     p = db.query(Project).filter(Project.id == project_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    imgs = _to_list(p.imagen_path)
-    vids = _to_list(p.video_path)
-    imgs = [path[8:] if path.startswith("uploads/") else path for path in imgs]
-    vids = [path[8:] if path.startswith("uploads/") else path for path in vids]
+
     return {
         "id": p.id,
         "titulo": p.titulo,
         "descripcion": p.descripcion,
-        "imagen_path": imgs,
-        "video_path": vids,
+        "imagen_path": _to_list(p.imagen_path),
+        "video_path": _to_list(p.video_path),
+        "tags": _to_list(p.tags),
         "fecha_creacion": p.fecha_creacion,
     }
 
+
 @router.post("/")
-def create_project(
+async def create_project(
     titulo: str = Form(...),
     descripcion: str = Form(...),
+    tags: List[str] = Form(default=[]),                 # ← NUEVO
     imagenes: List[UploadFile] = File(default=[]),
     videos: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ):
-    imagen_paths: List[str] = []
-    video_paths: List[str] = []
+    """Crea proyecto y sube múltiples imágenes / vídeos."""
+    img_paths, vid_paths = [], []
 
-    # Guardar imágenes
     for img in imagenes:
-        if not img.filename:
-            continue
-        filename = f"{int(datetime.now().timestamp()*1000)}_{img.filename}"
-        abs_path = os.path.join(UPLOAD_DIR, filename)
-        with open(abs_path, "wb") as f:
-            f.write(img.file.read())
-        # Guardamos como 'projects/filename'
-        imagen_paths.append(_rel_for_static(abs_path))
+        img_paths.append(_save_file(img, PROJECT_DIR))
 
-    # Guardar videos
     for vid in videos:
-        if not vid.filename:
-            continue
-        filename = f"{int(datetime.now().timestamp()*1000)}_{vid.filename}"
-        abs_path = os.path.join(UPLOAD_DIR, filename)
-        with open(abs_path, "wb") as f:
-            f.write(vid.file.read())
-        video_paths.append(_rel_for_static(abs_path))
+        vid_paths.append(_save_file(vid, PROJECT_DIR))
 
     proyecto = Project(
         titulo=titulo,
         descripcion=descripcion,
-        imagen_path=imagen_paths if imagen_paths else None,
-        video_path=video_paths if video_paths else None,
+        imagen_path=img_paths,
+        video_path=vid_paths,
+        tags=tags,
+        fecha_creacion=datetime.utcnow(),
     )
     db.add(proyecto)
     db.commit()
     db.refresh(proyecto)
-    return {
-        "id": proyecto.id,
-        "titulo": proyecto.titulo,
-        "descripcion": proyecto.descripcion,
-        "imagen_path": _to_list(proyecto.imagen_path),
-        "video_path": _to_list(proyecto.video_path),
-        "fecha_creacion": proyecto.fecha_creacion,
-    }
+    return {"id": proyecto.id}
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)):
+    """Borra proyecto y elimina ficheros asociados."""
+    p = db.query(Project).filter(Project.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    for rel in _to_list(p.imagen_path) + _to_list(p.video_path):
+        f = UPLOAD_ROOT / rel
+        try:
+            if f.exists():
+                f.unlink()
+        except Exception:
+            pass
+
+    db.delete(p)
+    db.commit()
+    return {"ok": True}

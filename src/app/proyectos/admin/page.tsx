@@ -1,366 +1,263 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  DndContext,
-  closestCenter,
-  DragEndEvent,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  rectSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { useState, useEffect, DragEvent } from "react";
+import { useSession, signIn } from "next-auth/react";
+import Navbar from "@/components/Navbar";
+import { API } from "@/lib/api";
 
-// ----- Tipos -----
-type Kind = "image" | "video";
+/* ---------- Tipos ---------- */
+type Preview = { file: File; url: string };
 
-interface MediaItem {
-  id: string;      // único para drag
-  kind: Kind;      // image | video
-  file: File;      // archivo crudo
-  preview: string; // URL.createObjectURL
-}
-
-// ----- Mini componente para item draggable -----
-function SortableThumb({
-  id,
-  src,
-  kind,
-  onRemove,
-}: {
-  id: string;
-  src: string;
-  kind: Kind;
-  onRemove: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition } =
-    useSortable({ id });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="relative rounded-lg overflow-hidden bg-gray-800 border border-gray-700"
-    >
-      {kind === "image" ? (
-        <img src={src} alt="preview" className="w-32 h-32 object-cover" />
-      ) : (
-        <video src={src} className="w-32 h-32 object-cover" controls />
-      )}
-
-      {/* Drag handle */}
-      <button
-        {...attributes}
-        {...listeners}
-        title="Arrastrar para reordenar"
-        className="absolute left-1 top-1 bg-black/50 text-white text-xs px-2 py-1 rounded"
-      >
-        ⠿
-      </button>
-
-      {/* Eliminar */}
-      <button
-        onClick={onRemove}
-        title="Eliminar"
-        className="absolute right-1 top-1 bg-red-600 text-white text-xs px-2 py-1 rounded hover:bg-red-700"
-      >
-        ×
-      </button>
-    </div>
+/* ---------- Utilidades ---------- */
+const fetchUserRole = async (email: string) => {
+  const res = await fetch(
+    `${API}/users/by-email?email=${encodeURIComponent(email)}`
   );
-}
+  if (!res.ok) throw new Error("No se pudo verificar rol");
+  const json = await res.json();
+  return json.role as string;
+};
 
-// ----- Página principal -----
+/* ---------- Componente ---------- */
 export default function AdminProyectosPage() {
+  /* sesión */
+  const { data: session, status } = useSession();
+
+  /* verificación de rol */
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (status === "loading") return;
+    if (!session?.user?.email) {
+      setAllowed(false);
+      return;
+    }
+    fetchUserRole(session.user.email)
+      .then((role) => setAllowed(role === "admin"))
+      .catch(() => setAllowed(false));
+  }, [status, session?.user?.email]);
+
+  /* estado del formulario */
   const [titulo, setTitulo] = useState("");
   const [descripcion, setDescripcion] = useState("");
-
-  // Una sola dropzone -> separamos a 2 listas por tipo
-  const [images, setImages] = useState<MediaItem[]>([]);
-  const [videos, setVideos] = useState<MediaItem[]>([]);
+  const [imgPreviews, setImgPreviews] = useState<Preview[]>([]);
+  const [vidPreviews, setVidPreviews] = useState<Preview[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  // Sensores para DnD
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-
-  // Utilidad para id único
-  const newId = () =>
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
-
-  // Manejo de entrada de archivos (input o drop)
-  const handleFiles = (fileList: FileList | null) => {
-    if (!fileList) return;
-    const arr = Array.from(fileList);
-    const imgItems: MediaItem[] = [];
-    const vidItems: MediaItem[] = [];
-    for (const f of arr) {
-      const preview = URL.createObjectURL(f);
-      const kind: Kind = f.type.startsWith("image/") ? "image" : f.type.startsWith("video/") ? "video" : "image";
-      const item: MediaItem = { id: newId(), kind, file: f, preview };
-      if (kind === "image") imgItems.push(item);
-      else vidItems.push(item);
-    }
-    setImages((prev) => [...prev, ...imgItems]);
-    setVideos((prev) => [...prev, ...vidItems]);
-  };
-
-  // Drop y drag-over de la zona principal
-  const onDropZoneDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  /* drag & drop handlers */
+  const onFilesDrop = (e: DragEvent<HTMLDivElement>, type: "img" | "vid") => {
     e.preventDefault();
-    handleFiles(e.dataTransfer.files);
+    const files = Array.from(e.dataTransfer.files);
+    const previews = files.map((f) => ({
+      file: f,
+      url: URL.createObjectURL(f),
+    }));
+    if (type === "img") setImgPreviews((p) => [...p, ...previews]);
+    else setVidPreviews((p) => [...p, ...previews]);
   };
 
-  const onDropZoneDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
+  /* reordenamiento sencillo (click to move up) */
+  const moveUp = (index: number, type: "img" | "vid") => {
+    const arr = type === "img" ? [...imgPreviews] : [...vidPreviews];
+    if (index === 0) return;
+    [arr[index - 1], arr[index]] = [arr[index], arr[index - 1]];
+    type === "img" ? setImgPreviews(arr) : setVidPreviews(arr);
   };
 
-  // Eliminar items
-  const removeImage = (id: string) => {
-    setImages((prev) => {
-      const item = prev.find((i) => i.id === id);
-      if (item) URL.revokeObjectURL(item.preview);
-      return prev.filter((i) => i.id !== id);
-    });
-  };
-
-  const removeVideo = (id: string) => {
-    setVideos((prev) => {
-      const item = prev.find((i) => i.id === id);
-      if (item) URL.revokeObjectURL(item.preview);
-      return prev.filter((i) => i.id !== id);
-    });
-  };
-
-  // Drag-end por lista
-  const onDragEndImages = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    setImages((prev) => {
-      const oldIndex = prev.findIndex((i) => i.id === String(active.id));
-      const newIndex = prev.findIndex((i) => i.id === String(over.id));
-      return arrayMove(prev, oldIndex, newIndex);
-    });
-  };
-
-  const onDragEndVideos = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    setVideos((prev) => {
-      const oldIndex = prev.findIndex((i) => i.id === String(active.id));
-      const newIndex = prev.findIndex((i) => i.id === String(over.id));
-      return arrayMove(prev, oldIndex, newIndex);
-    });
-  };
-
-  // Envío al backend (respeta orden actual)
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!titulo.trim() || !descripcion.trim()) {
-      alert("Completa título y descripción");
+  /* submit */
+  const handleSubmit = async () => {
+    if (!titulo || !descripcion) {
+      setMsg("Título y descripción son obligatorios");
       return;
     }
     setSubmitting(true);
-
-    const formData = new FormData();
-    formData.append("titulo", titulo);
-    formData.append("descripcion", descripcion);
-    images.forEach((it) => formData.append("imagenes", it.file));
-    videos.forEach((it) => formData.append("videos", it.file));
+    setMsg(null);
 
     try {
-      console.log("🚀 Creando proyecto…", { titulo, descripcion, images: images.length, videos: videos.length });
-      const res = await fetch("http://127.0.0.1:8000/projects/", {
+      /* 1️⃣ Crear proyecto (título + descripción) y subir arrays de files */
+      const form = new FormData();
+      form.append("titulo", titulo);
+      form.append("descripcion", descripcion);
+      imgPreviews.forEach((p) => form.append("imagenes", p.file));
+      vidPreviews.forEach((p) => form.append("videos", p.file));
+
+      const res = await fetch(`${API}/projects/`, {
         method: "POST",
-        body: formData, // <— multipart/form-data
+        body: form,
       });
 
-      const text = await res.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        // puede ser texto simple de error
-      }
-
-      console.log("📡 Status:", res.status, "↩︎", data ?? text);
-
       if (!res.ok) {
-        alert(`Error al crear el proyecto: ${res.status}`);
-        return;
+        const t = await res.text();
+        throw new Error(t || "Error al crear proyecto");
       }
 
-      alert("✅ Proyecto creado con éxito");
-      // Limpieza
-      images.forEach((i) => URL.revokeObjectURL(i.preview));
-      videos.forEach((v) => URL.revokeObjectURL(v.preview));
+      setMsg("✅ Proyecto creado con éxito");
+      // limpiar
       setTitulo("");
       setDescripcion("");
-      setImages([]);
-      setVideos([]);
-    } catch (err) {
-      console.error("❌ Error enviando al backend:", err);
-      alert("No se pudo conectar con el backend");
+      setImgPreviews([]);
+      setVidPreviews([]);
+    } catch (e: any) {
+      setMsg("❌ " + e.message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Limpieza de objectURLs al desmontar
-  useEffect(() => {
-    return () => {
-      images.forEach((i) => URL.revokeObjectURL(i.preview));
-      videos.forEach((v) => URL.revokeObjectURL(v.preview));
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // IDs para SortableContext
-  const imageIds = useMemo(() => images.map((i) => i.id), [images]);
-  const videoIds = useMemo(() => videos.map((v) => v.id), [videos]);
+  /* ---------- Render ---------- */
+  if (status === "loading" || allowed === null) {
+    return (
+      <>
+        <Navbar />
+        <main className="p-8 text-white bg-gray-900">Verificando permisos…</main>
+      </>
+    );
+  }
+  if (!allowed) {
+    return (
+      <>
+        <Navbar />
+        <main className="p-8 text-white bg-gray-900">
+          <p>No tienes permisos para acceder a esta página.</p>
+          {!session && (
+            <button
+              className="mt-4 px-4 py-2 bg-cyan-600 rounded"
+              onClick={() => signIn()}
+            >
+              Ingresar
+            </button>
+          )}
+        </main>
+      </>
+    );
+  }
 
   return (
-    <main className="bg-gray-900 min-h-screen text-white p-8">
-      <div className="max-w-5xl mx-auto">
+    <>
+      <Navbar />
+      <main className="min-h-screen bg-gray-900 text-white p-8">
         <h1 className="text-3xl font-extrabold text-cyan-400 mb-6">
-          Administrador de Proyectos
+          Nuevo Proyecto
         </h1>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label htmlFor="titulo" className="block text-sm text-gray-300 mb-1">
-                Título
-              </label>
-              <input
-                id="titulo"
-                name="titulo"
-                type="text"
-                className="w-full p-2 rounded bg-gray-800 border border-gray-700"
-                value={titulo}
-                onChange={(e) => setTitulo(e.target.value)}
-                required
-              />
-            </div>
+        {/* Formulario */}
+        <div className="space-y-4 max-w-3xl">
+          <input
+            type="text"
+            placeholder="Título"
+            value={titulo}
+            onChange={(e) => setTitulo(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded p-2"
+          />
+          <textarea
+            rows={4}
+            placeholder="Descripción"
+            value={descripcion}
+            onChange={(e) => setDescripcion(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded p-2"
+          />
 
-            <div className="md:col-span-2">
-              <label htmlFor="descripcion" className="block text-sm text-gray-300 mb-1">
-                Descripción
-              </label>
-              <textarea
-                id="descripcion"
-                name="descripcion"
-                rows={4}
-                className="w-full p-2 rounded bg-gray-800 border border-gray-700"
-                value={descripcion}
-                onChange={(e) => setDescripcion(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-
-          {/* Dropzone única */}
+          {/* Drag & drop zona imágenes */}
           <div
-            onDrop={onDropZoneDrop}
-            onDragOver={onDropZoneDragOver}
-            className="w-full p-6 rounded-2xl border-2 border-dashed border-cyan-500/70 bg-gray-800/50 text-center hover:bg-gray-800 transition"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => onFilesDrop(e, "img")}
+            className="border-2 border-dashed border-cyan-600 rounded p-4 text-center cursor-pointer"
           >
-            <p className="text-gray-300">
-              Arrastra <b>imágenes y videos</b> aquí o{" "}
-              <label htmlFor="filePicker" className="text-cyan-300 underline cursor-pointer">
-                selecciónalos
-              </label>
-            </p>
+            Arrastra imágenes aquí
             <input
-              id="filePicker"
-              type="file"
               multiple
-              accept="image/*,video/*"
-              onChange={(e) => handleFiles(e.target.files)}
-              className="hidden"
+              accept="image/*"
+              type="file"
+              hidden
+              onChange={(e) =>
+                setImgPreviews([
+                  ...imgPreviews,
+                  ...Array.from(e.target.files || []).map((f) => ({
+                    file: f,
+                    url: URL.createObjectURL(f),
+                  })),
+                ])
+              }
             />
           </div>
 
-          {/* Galería de Imágenes (sortable) */}
-          {images.length > 0 && (
-            <section>
-              <h2 className="text-lg font-semibold text-cyan-300 mb-2">Imágenes ({images.length})</h2>
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEndImages}>
-                <SortableContext items={imageIds} strategy={rectSortingStrategy}>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {images.map((it) => (
-                      <SortableThumb
-                        key={it.id}
-                        id={it.id}
-                        src={it.preview}
-                        kind="image"
-                        onRemove={() => removeImage(it.id)}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            </section>
+          {/* Previews imágenes */}
+          {imgPreviews.length > 0 && (
+            <div className="flex flex-wrap gap-3">
+              {imgPreviews.map((p, i) => (
+                <div key={i} className="relative group">
+                  <img
+                    src={p.url}
+                    alt=""
+                    className="w-32 h-32 object-cover rounded"
+                  />
+                  <button
+                    onClick={() => moveUp(i, "img")}
+                    className="absolute top-1 left-1 bg-black/60 text-xs px-1 rounded opacity-0 group-hover:opacity-100"
+                  >
+                    ↑
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
 
-          {/* Galería de Videos (sortable) */}
-          {videos.length > 0 && (
-            <section>
-              <h2 className="text-lg font-semibold text-cyan-300 mb-2">Videos ({videos.length})</h2>
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEndVideos}>
-                <SortableContext items={videoIds} strategy={rectSortingStrategy}>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {videos.map((it) => (
-                      <SortableThumb
-                        key={it.id}
-                        id={it.id}
-                        src={it.preview}
-                        kind="video"
-                        onRemove={() => removeVideo(it.id)}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            </section>
-          )}
-
-          <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 text-white px-5 py-2 rounded-lg"
-            >
-              {submitting ? "Creando…" : "Crear Proyecto"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                images.forEach((i) => URL.revokeObjectURL(i.preview));
-                videos.forEach((v) => URL.revokeObjectURL(v.preview));
-                setImages([]);
-                setVideos([]);
-              }}
-              className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg"
-            >
-              Limpiar galería
-            </button>
+          {/* Drag & drop zona videos */}
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => onFilesDrop(e, "vid")}
+            className="border-2 border-dashed border-cyan-600 rounded p-4 text-center cursor-pointer"
+          >
+            Arrastra videos aquí
+            <input
+              multiple
+              accept="video/*"
+              type="file"
+              hidden
+              onChange={(e) =>
+                setVidPreviews([
+                  ...vidPreviews,
+                  ...Array.from(e.target.files || []).map((f) => ({
+                    file: f,
+                    url: URL.createObjectURL(f),
+                  })),
+                ])
+              }
+            />
           </div>
-        </form>
-      </div>
-    </main>
+
+          {/* Previews videos */}
+          {vidPreviews.length > 0 && (
+            <div className="flex flex-wrap gap-3">
+              {vidPreviews.map((p, i) => (
+                <div key={i} className="relative group">
+                  <video
+                    src={p.url}
+                    className="w-32 h-32 object-cover rounded"
+                  />
+                  <button
+                    onClick={() => moveUp(i, "vid")}
+                    className="absolute top-1 left-1 bg-black/60 text-xs px-1 rounded opacity-0 group-hover:opacity-100"
+                  >
+                    ↑
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Mensaje / Botón */}
+          {msg && <p className="text-sm">{msg}</p>}
+
+          <button
+            disabled={submitting}
+            onClick={handleSubmit}
+            className="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded disabled:opacity-50"
+          >
+            {submitting ? "Subiendo…" : "Crear proyecto"}
+          </button>
+        </div>
+      </main>
+    </>
   );
 }

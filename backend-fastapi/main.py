@@ -12,7 +12,7 @@ from database import engine, Base
 from models import comment, user, project  # noqa: F401
 
 # Routers
-from routers import comments, projects
+from routers import comments, projects, users
 
 # --- Asegurar carpetas de subida existen ---
 # En este setup servimos /static -> carpeta "uploads"
@@ -45,10 +45,11 @@ app.add_middleware(
 # --- Montar estáticos ---
 # /static -> backend-fastapi/uploads
 app.mount("/static", StaticFiles(directory=UPLOAD_ROOT), name="static")
-
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 # --- Incluir routers ---
 app.include_router(projects.router)
 app.include_router(comments.router)
+app.include_router(users.router)
 
 # --- Rutas base ---
 @app.get("/")
