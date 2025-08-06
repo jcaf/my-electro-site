@@ -1,121 +1,105 @@
-"""
-Routers: Comments
-=================
-• GET  /comments/{project_id}              → lista paginada
-• GET  /comments/summary/{project_id}      → stats (avg, count, distribución)
-• POST /comments/                          → crear comentario
-"""
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
+from typing import List
+from datetime import datetime
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
+import bleach
 
 from database import get_db
 from models.comment import Comment
+from models.user import User
 
 router = APIRouter(prefix="/comments", tags=["Comments"])
 
+# --- Sanitización HTML segura ---
+# ALLOWED_TAGS es un frozenset => usamos unión de conjuntos y lo convertimos a lista
+ALLOWED_TAGS = list(
+    set(bleach.sanitizer.ALLOWED_TAGS)
+    | {
+        "p", "br", "ul", "ol", "li",
+        "strong", "em", "h1", "h2", "h3",
+        "blockquote", "code", "pre", "a",
+      }
+)
 
-# ---------- Utilidades ---------- #
-def serialize_comment(c: Comment) -> Dict[str, Any]:
-    """Convierte un Comment ORM en dict JSON-ready."""
-    return {
-        "id": c.id,
-        "proyecto_id": c.proyecto_id,
-        "user_id": c.user_id,
-        "texto": c.texto,
-        "estrellas": c.estrellas,
-        "fecha": c.fecha,
-    }
+# Partimos de los atributos por defecto y extendemos los de <a>
+ALLOWED_ATTRS = {**bleach.sanitizer.ALLOWED_ATTRIBUTES}
+ALLOWED_ATTRS["a"] = list(
+    set(ALLOWED_ATTRS.get("a", [])) | {"href", "title", "target", "rel"}
+)
 
+class CommentIn(BaseModel):
+    proyecto_id: int
+    user_email: str
+    estrellas: int = Field(ge=1, le=5)
+    content_html: str
 
-# ---------- Endpoints ---------- #
-@router.get("/{project_id}")
-def get_comments(
-    project_id: int,
+@router.post("/")
+def create_comment(payload: CommentIn, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.user_email).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Usuario no existe")
+
+    # Limpia el HTML (evita XSS) manteniendo el subset permitido
+    clean_html = bleach.clean(
+        payload.content_html,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRS,
+        strip=True,
+    )
+
+    c = Comment(
+        proyecto_id=payload.proyecto_id,
+        user_id=user.id,
+        texto=clean_html,  # También llenar el campo texto para compatibilidad
+        estrellas=payload.estrellas,
+        fecha=datetime.utcnow(),  # También llenar el campo fecha para compatibilidad
+        content_html=clean_html,
+        created_at=datetime.utcnow(),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"ok": True, "id": c.id}
+
+@router.get("/{proyecto_id}")
+def list_comments(
+    proyecto_id: int,
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
+    page_size: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """
-    Devuelve comentarios paginados de un proyecto.
-    Parámetros:
-      • page (1-N)
-      • page_size (1-100)
-    """
-    q = db.query(Comment).filter(Comment.proyecto_id == project_id)
-
-    total = q.count()
-    items = (
-        q.order_by(desc(Comment.fecha))
+    base = db.query(Comment).filter(Comment.proyecto_id == proyecto_id)
+    total = base.count()
+    rows = (
+        base.options(joinedload(Comment.user))
+        .order_by(Comment.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
 
+    items = [
+        {
+            "id": r.id,
+            "proyecto_id": r.proyecto_id,
+            "estrellas": r.estrellas,
+            "content_html": r.content_html,
+            "created_at": r.created_at,
+            "user": {"id": r.user.id, "email": r.user.email} if r.user else None,
+        }
+        for r in rows
+    ]
+
+    avg = db.query(func.avg(Comment.estrellas)).filter(Comment.proyecto_id == proyecto_id).scalar()
+    cnt = db.query(func.count(Comment.id)).filter(Comment.proyecto_id == proyecto_id).scalar()
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [serialize_comment(c) for c in items],
+        "items": items,
+        "avg_estrellas": float(avg) if avg else 0.0,
+        "count": int(cnt or 0),
     }
-
-
-@router.get("/summary/{project_id}")
-def summary(project_id: int, db: Session = Depends(get_db)):
-    """
-    Promedio de estrellas, total y distribución.
-    """
-    # AVG y COUNT
-    count, avg = (
-        db.query(
-            func.count(Comment.id),
-            func.avg(Comment.estrellas),
-        )
-        .filter(Comment.proyecto_id == project_id)
-        .first()
-    )
-
-    # Distribución: {5: n, 4: n, ...}
-    distribution = (
-        db.query(Comment.estrellas, func.count(Comment.id))
-        .filter(Comment.proyecto_id == project_id)
-        .group_by(Comment.estrellas)
-        .all()
-    )
-    dist_list = [{"stars": s, "count": c} for s, c in distribution]
-
-    return {
-        "count": count or 0,
-        "avg": float(avg) if avg is not None else 0.0,
-        "distribution": dist_list,
-    }
-
-
-@router.post("/")
-def create_comment(
-    proyecto_id: int,
-    user_id: int,
-    texto: str,
-    estrellas: int = Query(..., ge=1, le=5),
-    db: Session = Depends(get_db),
-):
-    """
-    Crea un comentario.
-    Requiere:
-      • proyecto_id
-      • user_id
-      • texto
-      • estrellas (1-5)
-    """
-    c = Comment(
-        proyecto_id=proyecto_id,
-        user_id=user_id,
-        texto=texto,
-        estrellas=estrellas,
-    )
-    db.add(c)
-    db.commit()
-    db.refresh(c)
-    return serialize_comment(c)

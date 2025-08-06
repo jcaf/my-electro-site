@@ -1,8 +1,6 @@
-// src/lib/api.ts
-export const API = "http://127.0.0.1:8000";
+export const API = "http://localhost:8000";
 
-export function toStaticUrl(relPath?: string) {
-  if (!relPath) return "";
-  const clean = relPath.replace(/^\/+/, ""); // quita '/' inicial si hubiera
-  return `${API}/static/${encodeURI(clean)}`;
+export function toStaticUrl(rel?: string) {
+  if (!rel) return "/placeholder.jpg";
+  return `${API}/static/${rel.replace(/^static\//, "")}`;
 }

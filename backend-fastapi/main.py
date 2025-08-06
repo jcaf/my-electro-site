@@ -1,66 +1,47 @@
-# backend-fastapi/main.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
-import os
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 from database import engine, Base
+from routers import projects, comments
+# importa modelos para que SQLAlchemy los registre
+from models import project, comment, user
 
-# Importa los modelos para que SQLAlchemy registre las tablas
-# (IMPORTANTE: incluir project para que cree la tabla `projects`)
-from models import comment, user, project  # noqa: F401
+app = FastAPI(title="My Electro Site API", version="1.0")
 
-# Routers
-from routers import comments, projects, users
-
-# --- Asegurar carpetas de subida existen ---
-# En este setup servimos /static -> carpeta "uploads"
-UPLOAD_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
-os.makedirs(os.path.join(UPLOAD_ROOT, "projects"), exist_ok=True)
-
-# --- Crear todas las tablas si no existen ---
+# Crear tablas si no existen
 Base.metadata.create_all(bind=engine)
 
-# --- App ---
-app = FastAPI(
-    title="My Electro Site API",
-    version="1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# --- CORS (ajusta si lo necesitas) ---
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["http://localhost:3000"],          # en prod: restringe dominos
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-User-Email"],
 )
 
-# --- Montar estáticos ---
-# /static -> backend-fastapi/uploads
-app.mount("/static", StaticFiles(directory=UPLOAD_ROOT), name="static")
-# app.mount("/static", StaticFiles(directory="static"), name="static")
-# --- Incluir routers ---
+# Servir ficheros estáticos
+STATIC_DIR = Path("static")
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Routers
 app.include_router(projects.router)
 app.include_router(comments.router)
-app.include_router(users.router)
 
-# --- Rutas base ---
 @app.get("/")
 def root():
-    return {
-        "status": "API funcionando correctamente",
-        "static_base": "/static",  # p.ej. /static/projects/archivo.jpg
-        "routers": ["/projects", "/comments"],
-    }
+    return {"status": "API funcionando correctamente"}
 
-# (Opcional) Ejecutar directamente: `python main.py`
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", reload=True)
+# Descarga protegida (temporal por cabecera)
+@app.get("/media/download")
+def secure_download(path: str, x_user_email: str = Header(None)):
+    if not x_user_email:
+        raise HTTPException(status_code=401, detail="No autorizado")
+    abs_path = STATIC_DIR / path
+    if not abs_path.exists() or not abs_path.is_file():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    return FileResponse(abs_path)

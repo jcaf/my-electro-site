@@ -1,263 +1,182 @@
 "use client";
 
-import { useState, useEffect, DragEvent } from "react";
-import { useSession, signIn } from "next-auth/react";
-import Navbar from "@/components/Navbar";
+import { useEffect, useState } from "react";
 import { API } from "@/lib/api";
+import { useSession, signIn } from "next-auth/react";
 
-/* ---------- Tipos ---------- */
-type Preview = { file: File; url: string };
+type FileBox = { file: File; url: string };
 
-/* ---------- Utilidades ---------- */
-const fetchUserRole = async (email: string) => {
-  const res = await fetch(
-    `${API}/users/by-email?email=${encodeURIComponent(email)}`
-  );
-  if (!res.ok) throw new Error("No se pudo verificar rol");
-  const json = await res.json();
-  return json.role as string;
-};
-
-/* ---------- Componente ---------- */
-export default function AdminProyectosPage() {
-  /* sesión */
-  const { data: session, status } = useSession();
-
-  /* verificación de rol */
-  const [allowed, setAllowed] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (status === "loading") return;
-    if (!session?.user?.email) {
-      setAllowed(false);
-      return;
-    }
-    fetchUserRole(session.user.email)
-      .then((role) => setAllowed(role === "admin"))
-      .catch(() => setAllowed(false));
-  }, [status, session?.user?.email]);
-
-  /* estado del formulario */
+export default function ProyectosAdminPage() {
+  const { data: session } = useSession();
   const [titulo, setTitulo] = useState("");
   const [descripcion, setDescripcion] = useState("");
-  const [imgPreviews, setImgPreviews] = useState<Preview[]>([]);
-  const [vidPreviews, setVidPreviews] = useState<Preview[]>([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [tagsText, setTagsText] = useState("");
 
-  /* drag & drop handlers */
-  const onFilesDrop = (e: DragEvent<HTMLDivElement>, type: "img" | "vid") => {
-    e.preventDefault();
-    const files = Array.from(e.dataTransfer.files);
-    const previews = files.map((f) => ({
+  const [imgs, setImgs] = useState<FileBox[]>([]);
+  const [vids, setVids] = useState<FileBox[]>([]);
+  const [docs, setDocs] = useState<FileBox[]>([]);
+
+  // drag reorder común
+  const handleReorder = (arr: FileBox[], from: number, to: number): FileBox[] => {
+    const copy = [...arr];
+    const [m] = copy.splice(from, 1);
+    copy.splice(to, 0, m);
+    return copy;
+  };
+
+  const onDrop = (files: FileList, kind: "img" | "vid" | "doc") => {
+    const mapped: FileBox[] = Array.from(files).map(f => ({
       file: f,
       url: URL.createObjectURL(f),
     }));
-    if (type === "img") setImgPreviews((p) => [...p, ...previews]);
-    else setVidPreviews((p) => [...p, ...previews]);
+    if (kind === "img") setImgs(prev => [...prev, ...mapped]);
+    if (kind === "vid") setVids(prev => [...prev, ...mapped]);
+    if (kind === "doc") setDocs(prev => [...prev, ...mapped]);
   };
 
-  /* reordenamiento sencillo (click to move up) */
-  const moveUp = (index: number, type: "img" | "vid") => {
-    const arr = type === "img" ? [...imgPreviews] : [...vidPreviews];
-    if (index === 0) return;
-    [arr[index - 1], arr[index]] = [arr[index], arr[index - 1]];
-    type === "img" ? setImgPreviews(arr) : setVidPreviews(arr);
-  };
+  const submit = async () => {
+    if (!session?.user?.email) { signIn(); return; }
 
-  /* submit */
-  const handleSubmit = async () => {
-    if (!titulo || !descripcion) {
-      setMsg("Título y descripción son obligatorios");
+    const fd = new FormData();
+    fd.append("titulo", titulo);
+    fd.append("descripcion", descripcion);
+    const tags = tagsText.split(",").map(t => t.trim()).filter(Boolean);
+    tags.forEach(t => fd.append("tags", t));
+    imgs.forEach(({ file }) => fd.append("imagenes", file));
+    vids.forEach(({ file }) => fd.append("videos", file));
+    docs.forEach(({ file }) => fd.append("documentos", file));
+
+    const r = await fetch(`${API}/projects/`, { method: "POST", body: fd });
+    if (!r.ok) {
+      const t = await r.text();
+      alert("Error: " + t);
       return;
     }
-    setSubmitting(true);
-    setMsg(null);
-
-    try {
-      /* 1️⃣ Crear proyecto (título + descripción) y subir arrays de files */
-      const form = new FormData();
-      form.append("titulo", titulo);
-      form.append("descripcion", descripcion);
-      imgPreviews.forEach((p) => form.append("imagenes", p.file));
-      vidPreviews.forEach((p) => form.append("videos", p.file));
-
-      const res = await fetch(`${API}/projects/`, {
-        method: "POST",
-        body: form,
-      });
-
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Error al crear proyecto");
-      }
-
-      setMsg("✅ Proyecto creado con éxito");
-      // limpiar
-      setTitulo("");
-      setDescripcion("");
-      setImgPreviews([]);
-      setVidPreviews([]);
-    } catch (e: any) {
-      setMsg("❌ " + e.message);
-    } finally {
-      setSubmitting(false);
-    }
+    const data = await r.json();
+    alert("Proyecto creado. ID: " + data.id);
+    setTitulo(""); setDescripcion(""); setTagsText("");
+    setImgs([]); setVids([]); setDocs([]);
   };
 
-  /* ---------- Render ---------- */
-  if (status === "loading" || allowed === null) {
-    return (
-      <>
-        <Navbar />
-        <main className="p-8 text-white bg-gray-900">Verificando permisos…</main>
-      </>
-    );
-  }
-  if (!allowed) {
-    return (
-      <>
-        <Navbar />
-        <main className="p-8 text-white bg-gray-900">
-          <p>No tienes permisos para acceder a esta página.</p>
-          {!session && (
-            <button
-              className="mt-4 px-4 py-2 bg-cyan-600 rounded"
-              onClick={() => signIn()}
-            >
-              Ingresar
-            </button>
-          )}
-        </main>
-      </>
-    );
-  }
+  return (
+    <main className="min-h-screen bg-gray-900 text-white p-8">
+      <h1 className="text-2xl font-bold mb-6">Administrador de Proyectos</h1>
+
+      <div className="max-w-4xl space-y-4">
+        <input
+          value={titulo}
+          onChange={(e) => setTitulo(e.target.value)}
+          placeholder="Título"
+          className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700"
+        />
+        <textarea
+          value={descripcion}
+          onChange={(e) => setDescripcion(e.target.value)}
+          placeholder="Descripción"
+          rows={4}
+          className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700"
+        />
+        <input
+          value={tagsText}
+          onChange={(e) => setTagsText(e.target.value)}
+          placeholder="Tags (iot, plc, ...)"
+          className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700"
+        />
+
+        {/* Zonas de drop */}
+        <Uploader
+          title="Imágenes"
+          kind="img"
+          items={imgs}
+          onDrop={(files) => onDrop(files, "img")}
+          onReorder={(from, to) => setImgs(prev => handleReorder(prev, from, to))}
+        />
+        <Uploader
+          title="Videos"
+          kind="vid"
+          items={vids}
+          onDrop={(files) => onDrop(files, "vid")}
+          onReorder={(from, to) => setVids(prev => handleReorder(prev, from, to))}
+        />
+        <Uploader
+          title="Documentos (PDF, Office, ZIP)"
+          kind="doc"
+          items={docs}
+          onDrop={(files) => onDrop(files, "doc")}
+          onReorder={(from, to) => setDocs(prev => handleReorder(prev, from, to))}
+        />
+
+        <button onClick={submit} className="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded">
+          Guardar Proyecto
+        </button>
+      </div>
+    </main>
+  );
+}
+
+function Uploader({
+  title, kind, items,
+  onDrop, onReorder
+}: {
+  title: string;
+  kind: "img" | "vid" | "doc";
+  items: { file: File; url: string }[];
+  onDrop: (files: FileList) => void;
+  onReorder: (from: number, to: number) => void;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const onDrag = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.type === "dragover") setDragOver(true);
+    if (e.type === "dragleave") setDragOver(false);
+  };
 
   return (
-    <>
-      <Navbar />
-      <main className="min-h-screen bg-gray-900 text-white p-8">
-        <h1 className="text-3xl font-extrabold text-cyan-400 mb-6">
-          Nuevo Proyecto
-        </h1>
+    <div>
+      <h3 className="font-semibold mb-2">{title}</h3>
+      <div
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); onDrop(e.dataTransfer.files); }}
+        onDragOver={onDrag}
+        onDragLeave={onDrag}
+        className={`border-2 border-dashed rounded p-4 text-center ${dragOver ? "border-cyan-500" : "border-gray-600"}`}
+      >
+        Arrastra y suelta aquí o
+        <label className="ml-2 underline cursor-pointer">
+          selecciona archivos
+          <input type="file" className="hidden" multiple
+                 accept={kind === "img" ? "image/*"
+                        : kind === "vid" ? "video/*"
+                        : ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip"}
+                 onChange={(e) => e.target.files && onDrop(e.target.files)} />
+        </label>
+      </div>
 
-        {/* Formulario */}
-        <div className="space-y-4 max-w-3xl">
-          <input
-            type="text"
-            placeholder="Título"
-            value={titulo}
-            onChange={(e) => setTitulo(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded p-2"
-          />
-          <textarea
-            rows={4}
-            placeholder="Descripción"
-            value={descripcion}
-            onChange={(e) => setDescripcion(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded p-2"
-          />
-
-          {/* Drag & drop zona imágenes */}
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => onFilesDrop(e, "img")}
-            className="border-2 border-dashed border-cyan-600 rounded p-4 text-center cursor-pointer"
+      {/* Previews + reorden */}
+      <div className="mt-3 flex flex-wrap gap-3">
+        {items.map((it, i) => (
+          <div key={i}
+               className="w-40 h-28 bg-gray-800 border border-gray-700 rounded relative overflow-hidden"
+               draggable
+               onDragStart={(e) => e.dataTransfer.setData("text/plain", String(i))}
+               onDrop={(e) => {
+                 const from = Number(e.dataTransfer.getData("text/plain"));
+                 const to = i;
+                 onReorder(from, to);
+               }}
+               onDragOver={(e) => e.preventDefault()}
           >
-            Arrastra imágenes aquí
-            <input
-              multiple
-              accept="image/*"
-              type="file"
-              hidden
-              onChange={(e) =>
-                setImgPreviews([
-                  ...imgPreviews,
-                  ...Array.from(e.target.files || []).map((f) => ({
-                    file: f,
-                    url: URL.createObjectURL(f),
-                  })),
-                ])
-              }
-            />
+            {kind === "img" ? (
+              <img src={it.url} className="w-full h-full object-cover" />
+            ) : kind === "vid" ? (
+              <video src={it.url} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-sm p-2">
+                📄 {it.file.name}
+              </div>
+            )}
           </div>
-
-          {/* Previews imágenes */}
-          {imgPreviews.length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {imgPreviews.map((p, i) => (
-                <div key={i} className="relative group">
-                  <img
-                    src={p.url}
-                    alt=""
-                    className="w-32 h-32 object-cover rounded"
-                  />
-                  <button
-                    onClick={() => moveUp(i, "img")}
-                    className="absolute top-1 left-1 bg-black/60 text-xs px-1 rounded opacity-0 group-hover:opacity-100"
-                  >
-                    ↑
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Drag & drop zona videos */}
-          <div
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => onFilesDrop(e, "vid")}
-            className="border-2 border-dashed border-cyan-600 rounded p-4 text-center cursor-pointer"
-          >
-            Arrastra videos aquí
-            <input
-              multiple
-              accept="video/*"
-              type="file"
-              hidden
-              onChange={(e) =>
-                setVidPreviews([
-                  ...vidPreviews,
-                  ...Array.from(e.target.files || []).map((f) => ({
-                    file: f,
-                    url: URL.createObjectURL(f),
-                  })),
-                ])
-              }
-            />
-          </div>
-
-          {/* Previews videos */}
-          {vidPreviews.length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {vidPreviews.map((p, i) => (
-                <div key={i} className="relative group">
-                  <video
-                    src={p.url}
-                    className="w-32 h-32 object-cover rounded"
-                  />
-                  <button
-                    onClick={() => moveUp(i, "vid")}
-                    className="absolute top-1 left-1 bg-black/60 text-xs px-1 rounded opacity-0 group-hover:opacity-100"
-                  >
-                    ↑
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Mensaje / Botón */}
-          {msg && <p className="text-sm">{msg}</p>}
-
-          <button
-            disabled={submitting}
-            onClick={handleSubmit}
-            className="bg-cyan-600 hover:bg-cyan-700 px-4 py-2 rounded disabled:opacity-50"
-          >
-            {submitting ? "Subiendo…" : "Crear proyecto"}
-          </button>
-        </div>
-      </main>
-    </>
+        ))}
+      </div>
+    </div>
   );
 }
