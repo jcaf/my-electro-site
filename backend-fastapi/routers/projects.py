@@ -159,3 +159,5 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+# Este endpoint fue removido para volver a versión anterior
