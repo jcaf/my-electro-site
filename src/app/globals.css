@@ -24,3 +24,56 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Estilos para el editor TipTap */
+.editor-container {
+  border: 1px solid #4a5568; /* border-gray-700 */
+  border-radius: 0.5rem; /* rounded-lg */
+  overflow: hidden;
+  background-color: #1a202c; /* bg-gray-900 */
+  color: #e2e8f0; /* text-gray-200 */
+}
+
+.editor-header {
+  padding: 0.5rem;
+  border-bottom: 1px solid #4a5568; /* border-gray-700 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.editor-header button {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  background-color: #2d3748; /* bg-gray-800 */
+  border: 1px solid transparent;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.editor-header button:hover {
+  background-color: #4a5568; /* bg-gray-700 */
+}
+
+.editor-header button.is-active {
+  background-color: #00A0B0; /* bg-cyan-600 */
+  color: white;
+}
+
+.ProseMirror {
+  min-height: 15rem; /* Altura mínima del area de texto */
+  padding: 1rem;
+}
+
+.ProseMirror:focus {
+  outline: none;
+}
+
+/* Estilos para el contenido del editor (placeholders, etc.) */
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #718096; /* text-gray-500 */
+  pointer-events: none;
+  height: 0;
+}

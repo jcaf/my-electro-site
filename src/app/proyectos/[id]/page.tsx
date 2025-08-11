@@ -59,9 +59,11 @@ export default async function ProyectoDetalle({
           </div>
         )}
 
-        <p className="text-gray-200 mb-8 whitespace-pre-wrap">
-          {proyecto.descripcion}
-        </p>
+        {/* Contenedor para renderizar el HTML de la descripción */}
+        <div
+          className="prose prose-invert max-w-none mb-8 text-gray-200"
+          dangerouslySetInnerHTML={{ __html: proyecto.descripcion }}
+        />
 
         {/* Media Gallery */}
         <MediaGallery images={imgs} videos={vids} apiUrl={API} />

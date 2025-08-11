@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { API } from "@/lib/api";
 import { useSession, signIn } from "next-auth/react";
+import RichTextEditor from "@/components/RichTextEditor"; // Importa el nuevo editor basado en TipTap
 
 type FileBox = { file: File; url: string };
 
 export default function ProyectosAdminPage() {
   const { data: session } = useSession();
   const [titulo, setTitulo] = useState("");
-  const [descripcion, setDescripcion] = useState("");
+  const [descripcion, setDescripcion] = useState(""); // El estado sigue almacenando el contenido HTML
   const [tagsText, setTagsText] = useState("");
 
   const [imgs, setImgs] = useState<FileBox[]>([]);
@@ -69,13 +70,14 @@ export default function ProyectosAdminPage() {
           placeholder="Título"
           className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700"
         />
-        <textarea
-          value={descripcion}
-          onChange={(e) => setDescripcion(e.target.value)}
-          placeholder="Descripción"
-          rows={4}
-          className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700"
+        
+        {/* Usamos el nuevo componente de editor */}
+        <RichTextEditor 
+          content={descripcion}
+          onChange={setDescripcion}
+          placeholder="Escribe la descripción detallada del proyecto aquí..."
         />
+        
         <input
           value={tagsText}
           onChange={(e) => setTagsText(e.target.value)}
@@ -166,7 +168,7 @@ function Uploader({
                onDragOver={(e) => e.preventDefault()}
           >
             {kind === "img" ? (
-              <img src={it.url} className="w-full h-full object-cover" />
+              <img src={it.url} className="w-full h-full object-cover" alt={it.file.name}/>
             ) : kind === "vid" ? (
               <video src={it.url} className="w-full h-full object-cover" />
             ) : (

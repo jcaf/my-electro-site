@@ -7,6 +7,7 @@ from sqlalchemy import func
 from typing import List, Optional
 from pathlib import Path
 from datetime import datetime
+import bleach  # Importado
 
 from database import get_db
 from models.project import Project
@@ -16,6 +17,23 @@ PROJECT_DIR = UPLOAD_ROOT / "projects"
 PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_DOC_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip"}
+
+# --- Definición de etiquetas y atributos HTML permitidos ---
+ALLOWED_TAGS = list(
+    set(bleach.sanitizer.ALLOWED_TAGS)
+    | {
+        "p", "br", "ul", "ol", "li", "hr",
+        "strong", "em", "b", "i", "u", "s", "strike",
+        "h1", "h2", "h3", "h4",
+        "blockquote", "code", "pre", "a", "img",
+    }
+)
+
+ALLOWED_ATTRS = {
+    **bleach.sanitizer.ALLOWED_ATTRIBUTES,
+    "a": ["href", "title", "target", "rel"],
+    "img": ["src", "alt", "title", "width", "height", "style"],
+}
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -128,9 +146,17 @@ async def create_project(
             raise HTTPException(status_code=400, detail=f"Extensión no permitida: {doc.filename}")
         doc_paths.append(_save_file(doc, PROJECT_DIR))
 
+    # Limpia el HTML de la descripción para evitar XSS
+    clean_descripcion = bleach.clean(
+        descripcion,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRS,
+        strip=True
+    )
+
     proyecto = Project(
         titulo=titulo,
-        descripcion=descripcion,
+        descripcion=clean_descripcion, # Usa la descripción sanitizada
         imagen_path=img_paths,
         video_path=vid_paths,
         doc_path=doc_paths,
